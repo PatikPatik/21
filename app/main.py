@@ -126,3 +126,4 @@ async def run() -> None:
     await application.stop()
     await application.shutdown()
     await db.close()
+ 
