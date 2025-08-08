@@ -13,7 +13,8 @@ from .utils.health import make_health_app
 
 from telegram import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeChat
 
-async def _register_commands(application, admin_ids: list[int]):
+
+async def _register_commands(application, admin_ids: list[int]) -> None:
     default_cmds = [
         BotCommand("start", "Проверка, что бот жив"),
         BotCommand("help", "Список команд"),
@@ -23,12 +24,18 @@ async def _register_commands(application, admin_ids: list[int]):
         BotCommand("stats", "Статистика (админ)"),
         BotCommand("broadcast", "Рассылка (админ)"),
     ]
+
+    # Для всех приватных чатов
     await application.bot.set_my_commands(default_cmds, scope=BotCommandScopeAllPrivateChats())
+
+    # Для админов — расширенный набор
     for uid in admin_ids:
         try:
             await application.bot.set_my_commands(default_cmds + admin_extra, scope=BotCommandScopeChat(chat_id=uid))
         except Exception:
+            # Ок, если пользователь ещё не писал боту
             pass
+
 
 async def run():
     settings = Settings.from_env()
@@ -42,6 +49,7 @@ async def run():
             integrations=[LoggingIntegration(level=logging.INFO, event_level=logging.ERROR)],
         )
 
+    # Telegram application
     try:
         application = (
             Application.builder()
@@ -54,9 +62,11 @@ async def run():
         logging.getLogger(__name__).error("Invalid BOT_TOKEN: %s", e)
         raise
 
+    # Database (опционально)
     db = Database(settings.DATABASE_URL)
     await db.connect()
 
+    # Handlers
     application.add_handler(CommandHandler("start", basic.start))
     application.add_handler(CommandHandler("help", basic.help_cmd))
     application.add_handler(CommandHandler("id", basic.show_id))
@@ -65,17 +75,20 @@ async def run():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, basic.echo))
     application.add_error_handler(errors.on_error)
 
+    # Shared objects
     application.bot_data["db"] = db
     application.bot_data["admins"] = settings.ADMIN_IDS
 
+    # Init PTB
     await application.initialize()
 
-    # Регистрируем команды
+    # Команды бота
     await _register_commands(application, settings.ADMIN_IDS)
 
-    # Наше aiohttp-приложение для /healthz
+    # Наше aiohttp-приложение для healthcheck
     web_app = make_health_app()
 
+    # Вебхук
     port = int(os.getenv("PORT", "8080"))
     url_path = f"/bot/{settings.WEBHOOK_SECRET}"
     webhook_url = f"{settings.BASE_URL}{url_path}"
@@ -87,12 +100,15 @@ async def run():
         port=port,
         url_path=url_path,
         secret_token=settings.WEBHOOK_SECRET,
-        web_app=web_app,
+        web_app=web_app,  # healthz живёт тут же
     )
 
     # Graceful shutdown
     stop_event = asyncio.Event()
-    def _signal_handler(*_): stop_event.set()
+
+    def _signal_handler(*_):
+        stop_event.set()
+
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
@@ -102,6 +118,7 @@ async def run():
 
     await stop_event.wait()
 
+    # Teardown
     await application.updater.stop()
     await application.stop()
     await application.shutdown()
