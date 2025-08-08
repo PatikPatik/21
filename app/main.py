@@ -35,19 +35,15 @@ async def _register_commands(application: Application, admin_ids: list[int]) -> 
         BotCommand("broadcast", "Рассылка (админ)"),
     ]
 
-    # Для всех приватных чатов
     await application.bot.set_my_commands(
         default_cmds, scope=BotCommandScopeAllPrivateChats()
     )
-
-    # Для админов — расширенный набор
     for uid in admin_ids:
         try:
             await application.bot.set_my_commands(
                 default_cmds + admin_extra, scope=BotCommandScopeChat(chat_id=uid)
             )
         except Exception:
-            # Ок, если пользователь ещё не писал боту
             pass
 
 
@@ -63,7 +59,6 @@ async def run() -> None:
             integrations=[LoggingIntegration(level=logging.INFO, event_level=logging.ERROR)],
         )
 
-    # Telegram application
     try:
         application = (
             Application.builder()
@@ -76,11 +71,9 @@ async def run() -> None:
         logging.getLogger(__name__).error("Invalid BOT_TOKEN: %s", e)
         raise
 
-    # Database (опционально)
     db = Database(settings.DATABASE_URL)
     await db.connect()
 
-    # Handlers
     application.add_handler(CommandHandler("start", basic.start))
     application.add_handler(CommandHandler("help", basic.help_cmd))
     application.add_handler(CommandHandler("id", basic.show_id))
@@ -89,27 +82,25 @@ async def run() -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, basic.echo))
     application.add_error_handler(errors.on_error)
 
-    # Shared objects
     application.bot_data["db"] = db
     application.bot_data["admins"] = settings.ADMIN_IDS
 
-    # Init PTB
     await application.initialize()
-
-    # Команды бота
     await _register_commands(application, settings.ADMIN_IDS)
 
-    # Вебхук
+    # Собираем корректный https URL вебхука
     base = settings.BASE_URL.strip().rstrip("/")
     url_path = f"/bot/{settings.WEBHOOK_SECRET}"
     webhook_url = f"{base}{url_path}"
 
-    await application.bot.set_webhook(url=webhook_url, secret_token=settings.WEBHOOK_SECRET)
+    # Запускаем приложение и вебхук-сервер.
+    # ВАЖНО: передаём полный webhook_url, а не ставим вебхук вручную.
     await application.start()
     await application.updater.start_webhook(
         listen="0.0.0.0",
         port=int(os.getenv("PORT", "8080")),
         url_path=url_path,
+        webhook_url=webhook_url,              # <— вот это ключевое
         secret_token=settings.WEBHOOK_SECRET,
     )
 
@@ -124,12 +115,10 @@ async def run() -> None:
         try:
             loop.add_signal_handler(sig, _signal_handler)
         except NotImplementedError:
-            # На некоторых платформах сигналы могут быть недоступны — это ок
             pass
 
     await stop_event.wait()
 
-    # Teardown
     await application.updater.stop()
     await application.stop()
     await application.shutdown()
