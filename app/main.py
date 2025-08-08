@@ -22,6 +22,7 @@ from .config import Settings
 from .logging_config import setup_logging
 from .repository.db import Database
 from .handlers import basic, admin, errors
+from .utils.health import make_health_app
 
 
 async def _register_commands(application: Application, admin_ids: list[int]) -> None:
@@ -44,6 +45,7 @@ async def _register_commands(application: Application, admin_ids: list[int]) -> 
                 default_cmds + admin_extra, scope=BotCommandScopeChat(chat_id=uid)
             )
         except Exception:
+            # ок, если пользователь ещё не писал боту
             pass
 
 
@@ -59,6 +61,7 @@ async def run() -> None:
             integrations=[LoggingIntegration(level=logging.INFO, event_level=logging.ERROR)],
         )
 
+    # Telegram application
     try:
         application = (
             Application.builder()
@@ -71,9 +74,11 @@ async def run() -> None:
         logging.getLogger(__name__).error("Invalid BOT_TOKEN: %s", e)
         raise
 
+    # DB (опционально)
     db = Database(settings.DATABASE_URL)
     await db.connect()
 
+    # Handlers
     application.add_handler(CommandHandler("start", basic.start))
     application.add_handler(CommandHandler("help", basic.help_cmd))
     application.add_handler(CommandHandler("id", basic.show_id))
@@ -82,26 +87,28 @@ async def run() -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, basic.echo))
     application.add_error_handler(errors.on_error)
 
+    # Shared
     application.bot_data["db"] = db
     application.bot_data["admins"] = settings.ADMIN_IDS
 
     await application.initialize()
     await _register_commands(application, settings.ADMIN_IDS)
 
-    # Собираем корректный https URL вебхука
+    # Собираем URL для вебхука
     base = settings.BASE_URL.strip().rstrip("/")
     url_path = f"/bot/{settings.WEBHOOK_SECRET}"
     webhook_url = f"{base}{url_path}"
 
-    # Запускаем приложение и вебхук-сервер.
-    # ВАЖНО: передаём полный webhook_url, а не ставим вебхук вручную.
+    # Стартуем приложение и вебхук-сервер PTB
+    # ВАЖНО: ставим вебхук через start_webhook (не вызываем bot.set_webhook отдельно)
     await application.start()
-    await application.updater.start_webhook(
+    await application.start_webhook(
         listen="0.0.0.0",
         port=int(os.getenv("PORT", "8080")),
         url_path=url_path,
-        webhook_url=webhook_url,              # <— вот это ключевое
+        webhook_url=webhook_url,
         secret_token=settings.WEBHOOK_SECRET,
+        web_app=make_health_app(),  # здесь живёт /healthz -> 200 OK для Render
     )
 
     # Graceful shutdown
@@ -119,7 +126,6 @@ async def run() -> None:
 
     await stop_event.wait()
 
-    await application.updater.stop()
     await application.stop()
     await application.shutdown()
     await db.close()
