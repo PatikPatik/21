@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: tg-bot-prod
+    env: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python -m app"
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: BASE_URL
+        sync: false
+      - key: WEBHOOK_SECRET
+        generateValue: true
+      - key: ENV
+        value: "prod"
+      - key: SENTRY_DSN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+    healthCheckPath: "/healthz"
+    autoDeploy: true
