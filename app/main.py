@@ -1,7 +1,20 @@
 from __future__ import annotations
-import asyncio, logging, signal, os
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, AIORateLimiter
+
+import asyncio
+import logging
+import os
+import signal
+
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    AIORateLimiter,
+)
 from telegram.error import InvalidToken
+from telegram import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeChat
+
 from sentry_sdk import init as sentry_init
 from sentry_sdk.integrations.logging import LoggingIntegration
 
@@ -9,9 +22,9 @@ from .config import Settings
 from .logging_config import setup_logging
 from .repository.db import Database
 from .handlers import basic, admin, errors
-from telegram import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeChat
 
-async def _register_commands(application, admin_ids: list[int]) -> None:
+
+async def _register_commands(application: Application, admin_ids: list[int]) -> None:
     default_cmds = [
         BotCommand("start", "Проверка, что бот жив"),
         BotCommand("help", "Список команд"),
@@ -21,14 +34,24 @@ async def _register_commands(application, admin_ids: list[int]) -> None:
         BotCommand("stats", "Статистика (админ)"),
         BotCommand("broadcast", "Рассылка (админ)"),
     ]
-    await application.bot.set_my_commands(default_cmds, scope=BotCommandScopeAllPrivateChats())
+
+    # Для всех приватных чатов
+    await application.bot.set_my_commands(
+        default_cmds, scope=BotCommandScopeAllPrivateChats()
+    )
+
+    # Для админов — расширенный набор
     for uid in admin_ids:
         try:
-            await application.bot.set_my_commands(default_cmds + admin_extra, scope=BotCommandScopeChat(chat_id=uid))
+            await application.bot.set_my_commands(
+                default_cmds + admin_extra, scope=BotCommandScopeChat(chat_id=uid)
+            )
         except Exception:
+            # Ок, если пользователь ещё не писал боту
             pass
 
-async def run():
+
+async def run() -> None:
     settings = Settings.from_env()
     setup_logging(settings.ENV)
 
@@ -40,6 +63,7 @@ async def run():
             integrations=[LoggingIntegration(level=logging.INFO, event_level=logging.ERROR)],
         )
 
+    # Telegram application
     try:
         application = (
             Application.builder()
@@ -52,9 +76,11 @@ async def run():
         logging.getLogger(__name__).error("Invalid BOT_TOKEN: %s", e)
         raise
 
+    # Database (опционально)
     db = Database(settings.DATABASE_URL)
     await db.connect()
 
+    # Handlers
     application.add_handler(CommandHandler("start", basic.start))
     application.add_handler(CommandHandler("help", basic.help_cmd))
     application.add_handler(CommandHandler("id", basic.show_id))
@@ -63,13 +89,17 @@ async def run():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, basic.echo))
     application.add_error_handler(errors.on_error)
 
+    # Shared objects
     application.bot_data["db"] = db
     application.bot_data["admins"] = settings.ADMIN_IDS
 
+    # Init PTB
     await application.initialize()
+
+    # Команды бота
     await _register_commands(application, settings.ADMIN_IDS)
 
-    # Ставим вебхук
+    # Вебхук
     base = settings.BASE_URL.strip().rstrip("/")
     url_path = f"/bot/{settings.WEBHOOK_SECRET}"
     webhook_url = f"{base}{url_path}"
@@ -83,9 +113,24 @@ async def run():
         secret_token=settings.WEBHOOK_SECRET,
     )
 
+    # Graceful shutdown
     stop_event = asyncio.Event()
-    def _signal_handler(*_): stop_event.set()
+
+    def _signal_handler(*_: object) -> None:
+        stop_event.set()
+
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
-            loop.add_signal_handler(sig, _signal_handl
+            loop.add_signal_handler(sig, _signal_handler)
+        except NotImplementedError:
+            # На некоторых платформах сигналы могут быть недоступны — это ок
+            pass
+
+    await stop_event.wait()
+
+    # Teardown
+    await application.updater.stop()
+    await application.stop()
+    await application.shutdown()
+    await db.close()
