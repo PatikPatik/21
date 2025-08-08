@@ -22,7 +22,6 @@ from .config import Settings
 from .logging_config import setup_logging
 from .repository.db import Database
 from .handlers import basic, admin, errors
-from .utils.health import make_health_app
 
 
 async def _register_commands(application: Application, admin_ids: list[int]) -> None:
@@ -45,7 +44,6 @@ async def _register_commands(application: Application, admin_ids: list[int]) -> 
                 default_cmds + admin_extra, scope=BotCommandScopeChat(chat_id=uid)
             )
         except Exception:
-            # ок, если пользователь ещё не писал боту
             pass
 
 
@@ -94,21 +92,19 @@ async def run() -> None:
     await application.initialize()
     await _register_commands(application, settings.ADMIN_IDS)
 
-    # Собираем URL для вебхука
+    # URL вебхука
     base = settings.BASE_URL.strip().rstrip("/")
     url_path = f"/bot/{settings.WEBHOOK_SECRET}"
     webhook_url = f"{base}{url_path}"
 
-    # Стартуем приложение и вебхук-сервер PTB
-    # ВАЖНО: ставим вебхук через start_webhook (не вызываем bot.set_webhook отдельно)
+    # Запуск. Вебхук ставит сам updater.start_webhook — передаём ему webhook_url.
     await application.start()
-    await application.start_webhook(
+    await application.updater.start_webhook(
         listen="0.0.0.0",
         port=int(os.getenv("PORT", "8080")),
         url_path=url_path,
-        webhook_url=webhook_url,
+        webhook_url=webhook_url,               # <-- критично
         secret_token=settings.WEBHOOK_SECRET,
-        web_app=make_health_app(),  # здесь живёт /healthz -> 200 OK для Render
     )
 
     # Graceful shutdown
@@ -126,6 +122,7 @@ async def run() -> None:
 
     await stop_event.wait()
 
+    await application.updater.stop()
     await application.stop()
     await application.shutdown()
     await db.close()
