@@ -1,6 +1,8 @@
 from aiohttp import web
 
-async def add_health_endpoint(aiohttp_app: web.Application) -> None:
+def make_health_app() -> web.Application:
+    app = web.Application()
     async def healthz(_):
         return web.Response(text="ok")
-    aiohttp_app.add_routes([web.get("/healthz", healthz)])
+    app.add_routes([web.get("/healthz", healthz)])
+    return app
